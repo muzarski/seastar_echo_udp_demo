@@ -16,7 +16,6 @@ seastar::future<> handle_read(udp_channel &channel, udp_datagram datagram) {
     memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
     buf[datagram.get_data().len()] = '\0';
     std::cout << "Message is " << buf << "\n";
-    std::cout << "Actual message is " << datagram.get_data() << "\n";
 
     std::string s = buf;
     std::reverse(s.begin(), s.end());
