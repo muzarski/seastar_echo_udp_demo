@@ -3,43 +3,51 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/util/log.hh>
 
-#define DATAGRAM_SIZE 1350
-
-uint16_t port = 12345;
-
 using namespace seastar::net;
 
-seastar::future<> handle_read(udp_channel &channel, udp_datagram datagram) {
-    std::cout << "Read " << datagram.get_data().len() << " bytes from " << datagram.get_src() << "\n";
+class Server {
+private:
+    udp_channel channel;
 
-    char buf[DATAGRAM_SIZE];
-    memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
-    buf[datagram.get_data().len()] = '\0';
-    std::cout << "Message is " << buf << "\n";
+    seastar::future<> handle_receive(udp_datagram &&datagram) {
+        std::cout << "Read " << datagram.get_data().len() << " bytes from " << datagram.get_src() << "\n";
 
-    std::string s = buf;
-    std::reverse(s.begin(), s.end());
+        char buf[DATAGRAM_SIZE];
+        memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
+        buf[datagram.get_data().len()] = '\0';
+        std::cout << "Message is " << buf << "\n";
 
-    return seastar::do_with(std::move(s), [&channel, &datagram] (std::string &to_send) {
-        std::cout << "Sending " << to_send << "\n";
-        return channel.send(datagram.get_src(), to_send.c_str());
-    });
-}
+        std::string s = buf;
+        std::reverse(s.begin(), s.end());
 
-seastar::future<> service_loop() {
-    return seastar::do_with(seastar::make_udp_channel(port), [] (udp_channel &channel) {
-        return seastar::keep_doing([&channel] {
-            return channel.receive().then([&channel] (udp_datagram datagram) {
-                return handle_read(channel, std::move(datagram));
+        return seastar::do_with(std::move(s), [this, &datagram] (std::string &to_send) {
+            std::cout << "Sending " << to_send << "\n";
+            return channel.send(datagram.get_src(), to_send.c_str());
+        });
+    }
+
+public:
+    explicit Server(std::uint16_t listen_port) :
+        channel(seastar::make_udp_channel(listen_port)) {};
+
+    seastar::future<> service_loop() {
+        return seastar::keep_doing([this] () {
+            return channel.receive().then([this] (udp_datagram datagram) {
+                return handle_receive(std::move(datagram));
             });
         });
-    });
-}
+    }
+};
 
-seastar::future<> f() {
+seastar::future<> submit_to_cores(uint16_t port) {
     return seastar::parallel_for_each(boost::irange<unsigned>(0, seastar::smp::count),
-            [] (unsigned core) {
-        return seastar::smp::submit_to(core, service_loop);
+            [port] (unsigned core) {
+        return seastar::smp::submit_to(core, [port] () {
+            Server _server(port);
+            return seastar::do_with(std::move(_server), [] (Server &server) {
+                return server.service_loop();
+            });
+        });
     });
 }
 
@@ -53,8 +61,8 @@ int main(int argc, char **argv) {
     try {
         app.run(argc, argv, [&] () {
             auto&& config = app.configuration();
-            port = config["port"].as<std::uint16_t>();
-            return f();
+            std::uint16_t port = config["port"].as<std::uint16_t>();
+            return submit_to_cores(port);
         });
     } catch(...) {
         std::cerr << "Couldn't start application: " << std::current_exception() << '\n';

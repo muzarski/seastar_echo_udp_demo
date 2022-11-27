@@ -1,51 +1,58 @@
 #include <iostream>
 #include <seastar/core/app-template.hh>
 #include <seastar/core/reactor.hh>
-#include <seastar/util/log.hh>
 #include <seastar/core/iostream.hh>
-
-#define DATAGRAM_SIZE 1350
-
-std::string server_address = "127.0.0.1";
-uint16_t port = 12345;
+#include <seastar/core/sleep.hh>
 
 using namespace seastar::net;
 
-seastar::future<> receive(udp_channel &channel) {
-    return channel.receive().then([] (udp_datagram datagram) {
-        char buf[DATAGRAM_SIZE];
-        memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
-        buf[datagram.get_data().len()] = '\0';
-        std::cout << buf << "\n";
-    });
-}
+class Client {
+private:
+    udp_channel channel;
+    seastar::ipv4_addr server_address;
 
+    seastar::future<> read_stdin_and_send() {
+        std::string s;
+        std::cin >> s;
+        return seastar::do_with(std::move(s), [this] (std::string &to_send) {
+            return channel.send(server_address, to_send.c_str());
+        });
+    }
 
-seastar::future<> read_stdin_and_send(udp_channel &channel, seastar::ipv4_addr &addr) {
-    std::string s;
-    std::cin >> s;
-    return seastar::do_with(std::move(s), [&channel, &addr] (std::string &to_send) {
-        std::cout << "Sending " << to_send << "\n";
-        return channel.send(addr, to_send.c_str());
-    });
-}
+    seastar::future<> receive() {
+        return channel.receive().then([] (udp_datagram datagram) {
+            char buf[DATAGRAM_SIZE];
+            memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
+            buf[datagram.get_data().len()] = '\0';
+            std::cout << buf << "\n";
+        });
+    }
 
-seastar::future<> service_loop() {
-    return seastar::do_with(seastar::make_udp_channel(), seastar::ipv4_addr(server_address, port),
-                            [] (udp_channel &channel, seastar::ipv4_addr &addr) {
-        return seastar::keep_doing([&channel, &addr] {
-            return read_stdin_and_send(channel, addr).then([&channel] () {
-                return receive(channel);
+public:
+    Client(const std::string &host, std::uint16_t port) :
+        channel(seastar::make_udp_channel()),
+        server_address(seastar::ipv4_addr(host, port)) {
+    };
+
+    seastar::future<> service_loop() {
+        return seastar::keep_doing([this] () {
+            return read_stdin_and_send().then([this] () {
+                return receive();
+            });
+        });
+    }
+};
+
+static seastar::future<> submit_to_cores(std::string &host, std::uint16_t port) {
+    return seastar::parallel_for_each(boost::irange<unsigned>(0, seastar::smp::count),
+            [&host, &port] (unsigned core) {
+        return seastar::smp::submit_to(core, [&host, &port] () {
+            Client _client(host, port);
+            return seastar::do_with(std::move(_client), [] (Client &client) {
+                return client.service_loop();
             });
         });
     });
-}
-
-seastar::future<> f() {
-    return seastar::parallel_for_each(boost::irange<unsigned>(0, seastar::smp::count),
-                                      [] (unsigned core) {
-                                          return seastar::smp::submit_to(core, service_loop);
-                                      });
 }
 
 int main(int argc, char **argv) {
@@ -53,15 +60,18 @@ int main(int argc, char **argv) {
 
     namespace po = boost::program_options;
     app.add_options()
-            ("server", po::value<std::string>()->required(), "server address")
+            ("host", po::value<std::string>()->required(), "server address")
             ("port", po::value<std::uint16_t>()->required(), "listen port");
 
     try {
         app.run(argc, argv, [&] () {
             auto&& config = app.configuration();
-            server_address = config["server"].as<std::string>();
-            port = config["port"].as<std::uint16_t>();
-            return f();
+            std::string server_address = config["host"].as<std::string>();
+            std::uint16_t port = config["port"].as<std::uint16_t>();
+            return seastar::do_with(std::move(server_address), port,
+                                    [] (std::string &addr, std::uint16_t &port) {
+               return submit_to_cores(addr, port);
+            });
         });
     } catch(...) {
         std::cerr << "Couldn't start application: " << std::current_exception() << '\n';

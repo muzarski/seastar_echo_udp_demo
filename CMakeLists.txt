@@ -12,8 +12,12 @@ if(FMT_LIB)
     message(STATUS "Found fmt library v8 - ${FMT_LIB}")
 endif()
 
+set(DATAGRAMSIZE 1000)
+
 add_executable(echo_server echo_server.cpp)
 target_link_libraries(echo_server Seastar::seastar ${FMT_LIB})
+target_compile_definitions(echo_server PRIVATE DATAGRAM_SIZE=${DATAGRAMSIZE})
 
 add_executable(echo_client echo_client.cpp)
 target_link_libraries(echo_client Seastar::seastar ${FMT_LIB})
+target_compile_definitions(echo_client PRIVATE DATAGRAM_SIZE=${DATAGRAMSIZE})
