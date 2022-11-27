@@ -16,8 +16,7 @@ seastar::future<> receive(udp_channel &channel) {
         char buf[DATAGRAM_SIZE];
         memcpy(buf, datagram.get_data().fragment_array()->base, datagram.get_data().len());
         buf[datagram.get_data().len()] = '\0';
-        std::cout << "Message is " << buf << "\n";
-        std::cout << "Actual message is " << datagram.get_data() << "\n";
+        std::cout << buf << "\n";
     });
 }
 
